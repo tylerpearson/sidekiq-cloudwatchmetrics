@@ -4,7 +4,7 @@ require "sidekiq"
 require "sidekiq/api"
 require "sidekiq/util"
 
-require "aws-sdk-cloudwatch"
+require "aws-sdk"
 
 module Sidekiq::CloudWatchMetrics
   def self.enable!(**kwargs)
@@ -38,8 +38,10 @@ module Sidekiq::CloudWatchMetrics
 
     INTERVAL = 60 # seconds
 
-    def initialize(client: Aws::CloudWatch::Client.new)
+    def initialize(client: Aws::CloudWatch::Client.new, namespace: 'Sidekiq', dimensions: [])
       @client = client
+      @namespace = namespace
+      @dimensions = dimensions
     end
 
     def start
@@ -85,73 +87,84 @@ module Sidekiq::CloudWatchMetrics
           timestamp: now,
           value: stats.processed,
           unit: "Count",
+          dimensions: @dimensions
         },
         {
           metric_name: "FailedJobs",
           timestamp: now,
           value: stats.failed,
           unit: "Count",
+          dimensions: @dimensions
         },
         {
           metric_name: "EnqueuedJobs",
           timestamp: now,
           value: stats.enqueued,
           unit: "Count",
+          dimensions: @dimensions
         },
         {
           metric_name: "ScheduledJobs",
           timestamp: now,
           value: stats.scheduled_size,
           unit: "Count",
+          dimensions: @dimensions
         },
         {
           metric_name: "RetryJobs",
           timestamp: now,
           value: stats.retry_size,
           unit: "Count",
+          dimensions: @dimensions
         },
         {
           metric_name: "DeadJobs",
           timestamp: now,
           value: stats.dead_size,
           unit: "Count",
+          dimensions: @dimensions
         },
         {
           metric_name: "Workers",
           timestamp: now,
           value: stats.workers_size,
           unit: "Count",
+          dimensions: @dimensions
         },
         {
           metric_name: "Processes",
           timestamp: now,
           value: stats.processes_size,
           unit: "Count",
+          dimensions: @dimensions
         },
         {
           metric_name: "Capacity",
           timestamp: now,
           value: capacity,
           unit: "Count",
+          dimensions: @dimensions
         },
         {
           metric_name: "Utilization",
           timestamp: now,
           value: utilization * 100.0,
           unit: "Percent",
+          dimensions: @dimensions
         },
         {
           metric_name: "DefaultQueueLatency",
           timestamp: now,
           value: stats.default_queue_latency,
           unit: "Seconds",
+          dimensions: @dimensions
         },
       ]
 
       queues.map do |(queue_name, queue_size)|
         metrics << {
           metric_name: "QueueSize",
-          dimensions: [{name: "QueueName", value: queue_name}],
+          dimensions: [{name: "QueueName", value: queue_name}] + @dimensions,
           timestamp: now,
           value: queue_size,
           unit: "Count",
@@ -161,7 +174,7 @@ module Sidekiq::CloudWatchMetrics
 
         metrics << {
           metric_name: "QueueLatency",
-          dimensions: [{name: "QueueName", value: queue_name}],
+          dimensions: [{name: "QueueName", value: queue_name}] + @dimensions,
           timestamp: now,
           value: queue_latency,
           unit: "Seconds",
@@ -171,7 +184,7 @@ module Sidekiq::CloudWatchMetrics
       # We can only put 20 metrics at a time
       metrics.each_slice(20) do |some_metrics|
         @client.put_metric_data(
-          namespace: "Sidekiq",
+          namespace: @namespace,
           metric_data: some_metrics,
         )
       end
@@ -181,14 +194,14 @@ module Sidekiq::CloudWatchMetrics
     private def calculate_capacity(processes)
       processes.map do |process|
         process["concurrency"]
-      end.sum
+      end.inject(0) {|sum,x| sum + x }
     end
 
     # Returns busy / concurrency averaged across processes (for scaling)
     private def calculate_utilization(processes)
       processes.map do |process|
         process["busy"] / process["concurrency"].to_f
-      end.sum / processes.size.to_f
+      end.inject(0) {|sum,x| sum + x } / processes.size.to_f
     end
 
     def quiet
